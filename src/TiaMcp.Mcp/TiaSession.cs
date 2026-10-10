@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -253,6 +254,51 @@ public sealed class TiaSession
     public Task<IReadOnlyList<HmiDeviceSummary>> ListHmiDevicesAsync()
     {
         return _sta.InvokeAsync(() => _connection.ListHmiDevices());
+    }
+
+    public Task<IReadOnlyList<string>> ListHmiClassicNamesAsync()
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiClassicNames());
+    }
+
+    public Task<IReadOnlyList<HmiClassicObjectSummary>> ListHmiClassicObjectsAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListHmiClassicObjects(hmiName));
+    }
+
+    public Task<IReadOnlyList<HmiClassicObjectXml>> ReadHmiClassicObjectsAsync(string hmiName, Func<string, string, string, bool>? include)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadHmiClassicObjects(hmiName, include));
+    }
+
+    public Task<int> CountHmiClassicGraphicListsAsync(string hmiName)
+    {
+        return _sta.InvokeAsync(() => _connection.CountHmiClassicGraphicLists(hmiName));
+    }
+
+    public Task<SimpleResult> WriteHmiClassicObjectAsync(string hmiName, string kind, string folderPath, string name, string xml, bool create)
+    {
+        return _sta.InvokeAsync(() => _connection.WriteHmiClassicObject(hmiName, kind, folderPath, name, xml, create));
+    }
+
+    public Task<bool> ClearHmiClassicScreenNumbersAsync()
+    {
+        return _sta.InvokeAsync(() => { _connection.ClearHmiClassicScreenNumbers(); return true; });
+    }
+
+    public Task<IReadOnlyList<string>> ListPlcAlarmTextListNamesAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ListPlcAlarmTextListNames(plcName));
+    }
+
+    public Task<PlcAlarmTextListsResult> ReadPlcAlarmTextListsAsync(string plcName)
+    {
+        return _sta.InvokeAsync(() => _connection.ReadPlcAlarmTextLists(plcName));
+    }
+
+    public Task<PlcAlarmTextWriteResult> WritePlcAlarmTextListsAsync(string plcName, IReadOnlyList<PlcAlarmTextList> lists, bool deleteMissing, bool dryRun)
+    {
+        return _sta.InvokeAsync(() => _connection.WritePlcAlarmTextLists(plcName, lists, deleteMissing, dryRun));
     }
 
     public Task<IReadOnlyList<HmiTagTableSummary>> ListHmiTagTablesAsync(string hmiName)

@@ -25,6 +25,8 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | PLC tag table | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
+| PLC alarm text list (user list) | `.csv`, Excel-compatible (synthesized from TIA's Excel export) | Yes | Yes (existing lists) |
+| Classic WinCC (Comfort/Advanced/RT Advanced): screens, screen templates, pop-up screens, tag tables, text lists | `.xml`, native Openness XML | Yes | Yes |
 
 All source is read and written as files in a [source tree](#source-tree) on disk, so an LLM reads only what it needs and edits with small diffs instead of passing whole blocks through its context.
 
@@ -153,7 +155,7 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 ## Source tree
 
-`read_source_tree` exports PLC blocks, tag tables and UDTs and WinCC Unified HMI tag tables and alarms to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items or groups you name:
+`read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items or groups you name:
 
 ```
 <targetDirectory>/
@@ -168,6 +170,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
     PLC data types/
       <group path>/
         SomeUdt.s7dcl
+    PLC alarm text lists/
+      Textlist_ErrorsMessages.csv
   <HmiName>/
     HMI tags/
       <group path>/
@@ -176,11 +180,21 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
       DiscreteAlarms.csv
       AnalogAlarms.csv
       AlarmClasses.csv
+  <ClassicHmiName>/
+    HMI tags/<folder>/Tags.xml
+    Screens/<folder>/Main.xml
+    Screen templates/<folder>/Template.xml
+    Pop-up screens/<folder>/Popup.xml
+    Text lists/States.xml
   _export_summary.txt
   _manifest.json
 ```
 
 Read and edit the files with your own file tools, then call `write_source_tree`. It writes back only what changed since the read — edited files, plus new files as new blocks, UDTs or tag tables — in dependency order, and then reads the written items back so the files show what TIA Portal made of them. Removing a row from a tag table CSV deletes that tag; deleting a file does not delete the item (use the `delete_*` tools).
+
+PLC alarm text lists: one CSV per user list (`From`, `To`, one `Text [language]` column per project language). TIA Portal's Excel import replaces whole lists, so a write starts from a fresh export, changes only the lists being written and imports that; removing a row deletes that entry (not when writing a tree read from another project). Lists can't be created through Openness - create a new list in TIA Portal first. System lists (`SYSTEM_*`) are not exported.
+
+Classic WinCC objects are native Openness XML (the `DocumentInfo` block is left out so an unchanged object reads back identically). They are written in dependency order (text lists, tag tables, templates and pop-ups, screens); a screen whose `<Number>` is already used by another screen is refused before the import, since TIA Portal V21 terminates itself on that. Graphic lists are not exported: exporting one crashed TIA Portal V21 (`InvalidCastException` in `UpdateOpenLinks`); a full read reports them as SKIPPED.
 
 `_manifest.json` records what each item looked like when it was read. An item that was changed in TIA Portal since then is refused rather than overwritten (`force` overrides this). A tree read from one project can also be written in full into another, e.g. to restore it into an empty PLC.
 
@@ -197,4 +211,5 @@ AGPL-3.0 (see [LICENSE](LICENSE)). Contributions require signing the [CLA](CLA.m
 
 - STL embedded in a mixed FBD/LAD/SCL block is read-only; whole-block STL is fully supported (see the STL section above).
 - GRAPH blocks can only be created by cloning an existing one (see the GRAPH section above), not from scratch.
-- Classic WinCC (Comfort/Advanced/RT) — its Openness object model has no alarm objects and no tag `Create` factory.
+- Classic WinCC (Comfort/Advanced/RT Advanced): alarms are not reachable through Openness; graphic lists are skipped (export crashes TIA Portal V21); objects can't be renamed or deleted through TiaMcp yet.
+- PLC alarm text lists: only existing user lists can be written; the screen-number check for classic screens exports every screen once per write (about a minute for ~50 screens).

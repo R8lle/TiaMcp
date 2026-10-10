@@ -12,7 +12,7 @@ using TiaMcp.Openness;
 namespace TiaMcp.Mcp;
 
 [McpServerToolType]
-public sealed class TiaTools
+public sealed partial class TiaTools
 {
     private readonly TiaSession _session;
 
@@ -414,7 +414,7 @@ public sealed class TiaTools
     });
 
     [McpServerTool(Name = "list_project")]
-    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups, and the HMI alarm files. Fast: names only, no source - read_source_tree reads the source. Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
+    [Description(@"List what the connected project has, per PLC and HMI software ('=== name ===' - the plcName/hmiName other tools take): blocks with their language (INCONSISTENT: needs compile_plc, e.g. before a GRAPH or STL block can be read), UDTs, tag tables, empty tag table groups and alarm text lists; for WinCC Unified the HMI tag tables and alarm files, for classic WinCC the tag tables, text lists, screen templates, pop-up screens and screens. Fast: names only, no source - read_source_tree reads the source. Item lines are in _export_summary.txt's format and can be passed to read_source_tree's items as they are.
 
 Without filter or deviceName, a project of more than 200 items only gets counts per software back; pass targetDirectory to write the full list to '<targetDirectory>/_project_list.txt'.")]
     public Task<string> ListProject(
@@ -439,10 +439,11 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
             var tables = allTables.Where(t => Matches(t.GroupPath, t.Name)).ToList();
             var emptyGroups = EmptyGroups(allTables.Select(t => t.GroupPath), await _session.ListTagTableGroupsAsync(plc)).Where(g => Matches(g, "")).ToList();
             var types = (await _session.ListPlcTypesAsync(plc)).Where(t => Matches(t.GroupPath, t.Name)).ToList();
+            var textLists = (await _session.ListPlcAlarmTextListNamesAsync(plc)).Where(n => Matches("", n)).ToList();
 
-            var found = blocks.Count + tables.Count + emptyGroups.Count + types.Count;
+            var found = blocks.Count + tables.Count + emptyGroups.Count + types.Count + textLists.Count;
             total += found;
-            counts.AppendLine($"{plc}: {blocks.Count} block(s) ({blocks.Count(b => !b.Consistent)} inconsistent), {types.Count} UDT(s), {tables.Count} tag table(s)");
+            counts.AppendLine($"{plc}: {blocks.Count} block(s) ({blocks.Count(b => !b.Consistent)} inconsistent), {types.Count} UDT(s), {tables.Count} tag table(s), {textLists.Count} alarm text list(s)");
             if (found == 0 && filter != null) continue;
 
             list.AppendLine($"=== {plc} ===");
@@ -450,6 +451,7 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
             foreach (var t in tables) list.AppendLine($"  {Describe("tag table", t.GroupPath, t.Name)}");
             foreach (var g in emptyGroups) list.AppendLine($"  tag table group '{g}' (empty)");
             foreach (var t in types) list.AppendLine($"  {Describe("udt", t.GroupPath, t.Name)}");
+            foreach (var n in textLists) list.AppendLine($"  {Describe(AlarmTextListKind, "", n)}");
             list.AppendLine();
         }
 
@@ -470,6 +472,22 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
             foreach (var t in tables) list.AppendLine($"  {Describe("HMI tag table", t.GroupPath, t.Name)}");
             foreach (var g in emptyGroups) list.AppendLine($"  HMI tag table group '{g}' (empty)");
             foreach (var kind in alarms) list.AppendLine($"  {kind}");
+            list.AppendLine();
+        }
+
+        foreach (var hmi in (await _session.ListHmiClassicNamesAsync()).Where(IsSelectedDevice))
+        {
+            devices++;
+            var objects = (await _session.ListHmiClassicObjectsAsync(hmi))
+                .Where(o => o.Kind != HmiClassicKinds.GraphicList && Matches(o.FolderPath, o.Name))
+                .OrderBy(o => Array.IndexOf(KindOrder, TreeKindOf(o.Kind))).ThenBy(o => Label(o.FolderPath, o.Name), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            total += objects.Count;
+            counts.AppendLine($"{hmi} (HMI, classic WinCC): {string.Join(", ", ClassicKinds.Select(k => $"{objects.Count(o => o.Kind == k.ClassicKind)} {k.TreeKind.Substring(4)}(s)"))}");
+            if (objects.Count == 0 && filter != null) continue;
+
+            list.AppendLine($"=== {hmi} (HMI) ===");
+            foreach (var o in objects) list.AppendLine($"  {Describe(TreeKindOf(o.Kind), o.FolderPath, o.Name)}");
             list.AppendLine();
         }
 
@@ -497,11 +515,11 @@ Without filter or deviceName, a project of more than 200 items only gets counts 
     }
 
     [McpServerTool(Name = "read_source_tree")]
-    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and <targetDirectory>/<HmiSoftwareName>/HMI tags/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
+    [Description(@"Export project source to disk, into folders that mirror the TIA Portal project tree: <targetDirectory>/<PlcName>/Program blocks/<group path>/..., .../PLC tags/..., .../PLC data types/..., and .../PLC alarm text lists/<list>.csv; <targetDirectory>/<HmiSoftwareName>/HMI tags/... and .../HMI alarms/ (DiscreteAlarms.csv, AnalogAlarms.csv, AlarmClasses.csv - fixed files, alarms have no groups in Openness); for a classic WinCC HMI .../HMI tags/, Screens/, Screen templates/, Pop-up screens/ (each with its folders) and Text lists/, as native Openness XML. Classic graphic lists are skipped (exporting one crashes TIA Portal V21). Read the files with your file tools; edit them and call write_source_tree to write the changes back.
 
 Pass items to read only part of the project (much faster than a full read): e.g. one block to look at or refresh, or a group. A read overwrites the selected items' files, including unsaved edits to them. An item that no longer exists in the project (deleted or renamed in TIA Portal) has its files deleted.
 
-Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables and alarms are Excel-compatible CSV with a UTF-8 BOM.
+Files per item: blocks and UDTs keep TIA Portal's own document format (.s7dcl, plus .s7res holding the comment/title texts its S7_MLC attributes refer to); a GRAPH block is '<name>.graph.il', a whole-block-STL block '<name>.awl' (TIA Portal's own 'Generate source' text). Read-only companions, never written back: '<name>.interface.txt' (an instance DB's resolved interface) and '<name>.stl-networks.awl'/'.xml' (the STL networks inside an otherwise FBD/LAD/SCL block; the .s7dcl keeps an empty placeholder NETWORK with S7_Language := ""STL"" at each one's position). Tag tables, alarms and alarm text lists (From, To, one Text [language] column per project language) are Excel-compatible CSV with a UTF-8 BOM.
 
 An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be compiled first) is reported, and files from an earlier read of it are renamed with a '.stale' suffix rather than left looking current. '_export_summary.txt' lists every item in the tree; '_manifest.json' is write_source_tree's bookkeeping - don't edit it. Returns counts, failures, and for a partial read each item's files.")]
     public Task<string> ReadSourceTree(
@@ -560,6 +578,7 @@ An item that fails to export (e.g. an inconsistent block - GRAPH blocks must be 
             else if (partial) result.AppendLine($"  OK      {Describe(item.Kind, item.GroupPath, item.Name)}: {string.Join(", ", item.Files.Select(f => f.Path))}");
         }
         foreach (var item in gone) result.AppendLine($"  REMOVED {Describe(item)} - no longer in the project, its files were deleted");
+        foreach (var note in _exportNotes) result.AppendLine($"  {note}");
         result.AppendLine($"Full item list: {summaryPath}");
         return result.ToString();
     });
@@ -603,9 +622,12 @@ Writing rules per file type:
 - Instance DB: its .s7dcl ('DATA_BLOCK ""x"" ... : FB_y'); the FB must exist.
 - PLC tag table CSV: Name, DataType, LogicalAddress, Comment, ExternalAccessible, ExternalVisible, ExternalWritable (True/False). Rows update or add tags; an empty cell leaves that value unchanged; removing a row deletes that tag (not when writing a tree read from another project). Renaming a tag in the CSV deletes it and makes a new one, breaking references - use rename_plc_tag.
 - HMI tag table CSV: Name, DataType, Address, Connection, PlcName, PlcTag, Comment, AcquisitionCycle. Bind to a PLC tag with Connection + PlcTag (dot-qualified for a DB member); DataType then follows from the PLC tag. PlcName is ignored on write. AcquisitionCycle (e.g. T1s) only on PLC-bound tags. Rows and removed rows as for PLC tag tables; rename with rename_hmi_tag.
+- PLC alarm text list CSV ('PLC alarm text lists/<list>.csv'): From, To, Text [language]... Only existing user lists (create a new list in TIA Portal). The write patches a fresh export of all lists and imports it, so other lists are untouched; a removed row deletes that entry (not when writing a tree read from another project); a language column left out stays unchanged. Every list's language must be a project language.
+- Classic WinCC XML (screens, templates, pop-ups, tag tables, text lists): native Openness XML as read; <Name> must match the file name. A new screen needs a <Number> not used by another screen - checked before the import (a duplicate number makes TIA Portal V21 terminate itself).
 - HMI alarms CSV: rows update or add alarms by name; a removed row is not deleted (use delete_hmi_alarm). RaisedStateTag binds the trigger (a tag or member path whose base HMI tag exists); TriggerAddress is computed and read-only. EventText/InfoText are plain text. AlarmClasses.csv: Name, Priority, Log; system classes accept no Priority change.
 
 Writes in dependency order: UDTs, then tag tables, then blocks, with UDTs and blocks each split into layers by what their source references (nested UDTs first; global DBs and called FBs before their callers and instance DBs), compiling the PLC between UDT layers - imports can fail, or a UDT can silently lose nested start values, when what they reference isn't there yet.
+Then the PLC alarm text lists. A classic HMI is written text lists first, then tag tables, templates and pop-ups, then screens.
 
 itemList limits what is considered, as lines from list_project or _export_summary.txt (a file path, or the lines inline; the OK status column is optional); all=true writes those items even if unchanged. Set dryRun to preview what would be created/updated/skipped/refused.
 
@@ -669,6 +691,9 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             items = changed;
         }
 
+        var classicHmis = new HashSet<string>(await _session.ListHmiClassicNamesAsync(), StringComparer.OrdinalIgnoreCase);
+        await _session.ClearHmiClassicScreenNumbersAsync();
+
         var conflicts = new List<(ImportListItem Item, string Reason)>();
         if (workingCopy && !force && items.Count > 0)
         {
@@ -711,6 +736,17 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
             var blockItems = deviceItems.Where(i => i.Kind == "block").ToList();
             if (blockItems.Count > 0) logs.Add(await ImportBlocks(deviceName, deviceDir, blockItems, createMissing, overwriteExisting, dryRun, written));
+
+            // After the blocks: the text lists' messages belong to the alarms the blocks define.
+            var alarmTextListItems = deviceItems.Where(i => i.Kind == AlarmTextListKind).ToList();
+            if (alarmTextListItems.Count > 0) logs.Add(await ImportAlarmTextLists(deviceName, deviceDir, alarmTextListItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
+
+            if (classicHmis.Contains(deviceName))
+            {
+                var classicItems = deviceItems.Where(i => IsClassicTreeKind(i.Kind)).ToList();
+                if (classicItems.Count > 0) logs.Add(await ImportHmiClassic(deviceName, deviceDir, classicItems, createMissing, overwriteExisting, dryRun, written));
+                deviceItems = deviceItems.Where(i => !IsClassicTreeKind(i.Kind)).ToList();
+            }
 
             var hmiTagTableItems = deviceItems.Where(i => i.Kind == "HMI tag table").ToList();
             if (hmiTagTableItems.Count > 0) logs.Add(await ImportHmiTagTables(deviceName, deviceDir, hmiTagTableItems, createMissing, overwriteExisting, dryRun, workingCopy, written));
@@ -786,7 +822,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             : DiskState.Unchanged;
     }
 
-    private static readonly string[] SourceExtensions = { ".s7dcl", ".s7res", ".graph.il", ".awl", ".csv" };
+    private static readonly string[] SourceExtensions = { ".s7dcl", ".s7res", ".graph.il", ".awl", ".csv", ".xml" };
 
     // Source files in the tree that no read put there: new items to create. Kind and group path
     // follow from the folder (see ItemDir), the name from the file name.
@@ -818,7 +854,12 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             Scan("Program blocks", "block", ".s7dcl", ".graph.il", ".awl");
             Scan("PLC data types", "udt", ".s7dcl");
             Scan("PLC tags", "tag table", ".csv");
-            Scan("HMI tags", "HMI tag table", ".csv");
+            Scan("PLC alarm text lists", "alarm text list", ".csv");
+            Scan("HMI tags", "HMI tag table", ".csv", ".xml");
+            Scan("Text lists", "HMI text list", ".xml");
+            Scan("Screen templates", "HMI screen template", ".xml");
+            Scan("Pop-up screens", "HMI pop-up screen", ".xml");
+            Scan("Screens", "HMI screen", ".xml");
             foreach (var kind in HmiAlarmKinds.Where(k => File.Exists(Path.Combine(deviceDir, "HMI alarms", ItemStem(k, "") + ".csv"))))
             {
                 if (manifest.Find(device, kind, "") == null) found.Add(new ImportListItem(device, kind, "", "", true));
@@ -1437,6 +1478,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
     {
         var items = new List<ExportedItem>();
         var devices = new List<string>();
+        _exportNotes.Clear();
         bool Includes(string device, string kind, string groupPath, string name) => include == null || include(device, kind, groupPath, name);
         bool IsSelectedDevice(string device) => deviceName == null || string.Equals(device, deviceName, StringComparison.OrdinalIgnoreCase);
 
@@ -1449,6 +1491,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
                 items.Add(FromCsv(plc, "tag table", t.GroupPath, t.Name, result.Success ? FormatTagTable(result.Tags) : null, result.Error));
             foreach (var (t, result) in await _session.ReadAllUdtsAsync(plc, (g, n) => Includes(plc, "udt", g, n)))
                 items.Add(FromDocuments(plc, "udt", t.GroupPath, t.Name, result));
+            await ExportPlcAlarmTextLists(plc, Includes, items);
         }
 
         foreach (var hmi in (await _session.ListHmiDevicesAsync()).Select(h => h.HmiSoftwareName).Where(IsSelectedDevice))
@@ -1483,6 +1526,12 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             }
         }
 
+        foreach (var hmi in (await _session.ListHmiClassicNamesAsync()).Where(IsSelectedDevice))
+        {
+            devices.Add(hmi);
+            await ExportHmiClassic(hmi, Includes, include == null, items);
+        }
+
         return (items, devices);
     }
 
@@ -1509,6 +1558,11 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         "udt" => "PLC data types",
         "tag table" => "PLC tags",
         "HMI tag table" => "HMI tags",
+        "alarm text list" => "PLC alarm text lists",
+        "HMI screen" => "Screens",
+        "HMI screen template" => "Screen templates",
+        "HMI pop-up screen" => "Pop-up screens",
+        "HMI text list" => "Text lists",
         _ => "HMI alarms",
     };
 
@@ -1586,7 +1640,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
 
     private static string Describe(SourceTreeItem item) => Describe(item.Kind, item.GroupPath, item.Name);
 
-    private static readonly string[] KindOrder = { "block", "tag table", "udt", "HMI tag table", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
+    private static readonly string[] KindOrder = { "block", "tag table", "udt", "alarm text list", "HMI tag table", "HMI text list", "HMI screen template", "HMI pop-up screen", "HMI screen", "HMI DiscreteAlarms", "HMI AnalogAlarms", "HMI AlarmClasses" };
 
     // _export_summary.txt: every item in the tree, so it stays the full list for write_source_tree
     // after a read of only part of the project.
@@ -1647,7 +1701,7 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
         return false;
     }
 
-    private static readonly Regex ListedItem = new(@"^(?:(?<status>OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|HMI tag table) '(?<label>[^']*)')", RegexOptions.Compiled);
+    private static readonly Regex ListedItem = new(@"^(?:(?<status>OK|FAILED|STALE)\s+)?(?:(?<kind>HMI (?:DiscreteAlarms|AnalogAlarms|AlarmClasses))\b|(?<kind>block|udt|tag table|alarm text list|HMI tag table|HMI screen template|HMI pop-up screen|HMI screen|HMI text list) '(?<label>[^']*)')", RegexOptions.Compiled);
 
     private static string FormatHmiAlarms(IReadOnlyList<HmiAlarmInfo> alarms) =>
         FormatCsv(

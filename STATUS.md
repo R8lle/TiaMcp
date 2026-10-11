@@ -29,7 +29,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | External source group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
 | Technology object (PID, motion, counter) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, import/export |
 | Technology object group | ❌ | ❌ | — | — | ❌ | ❌ | Openness: create, delete |
-| PLC alarm text list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete, Excel export |
+| PLC alarm text list | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | User lists as `.csv` (one per list) through the source tree; written by patching a fresh Excel export (a removed row deletes the entry). Openness: create, delete |
 | PLC alarm class | ❌ | — | ❌ | ❌ | — | — | Openness: import/export only |
 | Supervision (ProDiag) settings | — | — | ❌ | ❌ | — | — | Openness: import/export only |
 | Software unit (S7-1500) + relations | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
@@ -50,6 +50,18 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 | Text list / graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: delete, import/export |
 | HMI connection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
 | Data log / alarm log / logging tag | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Openness: create, delete |
+
+## HMI (classic WinCC: Comfort / Advanced / RT Advanced)
+
+| Object | List | Create | Read | Update | Rename | Delete | Notes |
+|---|---|---|---|---|---|---|---|
+| Screen | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` (Openness XML); duplicate screen numbers refused before import (TIA Portal V21 terminates itself) |
+| Screen template / pop-up screen | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` |
+| Screen / template / pop-up folder | ⚠️ | ✅ | — | — | ❌ | ❌ | Folders follow the tree; created on write; empty folders not listed |
+| HMI tag table | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` |
+| Text list | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | `.xml` |
+| Graphic list | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Export crashes TIA Portal V21; skipped with a note |
+| Alarms | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not in the classic Openness object model |
 
 ## Project
 

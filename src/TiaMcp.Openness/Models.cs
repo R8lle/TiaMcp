@@ -83,3 +83,30 @@ public sealed record HmiAlarmSpec(
     string? Origin);
 
 public sealed record HmiAlarmResult(bool Success, IReadOnlyList<HmiAlarmInfo> Alarms, string? Error);
+
+// Classic WinCC (Comfort/Advanced/RT Advanced) - Siemens.Engineering.Hmi.HmiTarget.
+// Kind is one of HmiClassicKinds.All; FolderPath is "" for the root of that kind's system folder.
+public sealed record HmiClassicObjectSummary(string HmiName, string Kind, string FolderPath, string Name);
+
+// One classic object as Openness XML (without DocumentInfo), or why it couldn't be exported.
+public sealed record HmiClassicObjectXml(string Kind, string FolderPath, string Name, string? Xml, string? Error);
+
+// PLC alarm text list (user list): entries From/To (as text, like the export) with one text per language.
+public sealed record PlcAlarmTextEntry(string From, string To, IReadOnlyList<string> Texts);
+
+public sealed record PlcAlarmTextList(string Name, IReadOnlyList<string> Languages, IReadOnlyList<PlcAlarmTextEntry> Entries);
+
+public sealed record PlcAlarmTextListsResult(bool Success, IReadOnlyList<PlcAlarmTextList> Lists, string? Error);
+
+public sealed class PlcAlarmTextListChange
+{
+    public PlcAlarmTextListChange(string list) => List = list;
+
+    public string List { get; }
+    public List<string> Added { get; } = new();
+    public List<string> Changed { get; } = new();
+    public List<string> Deleted { get; } = new();
+}
+
+// Message: the error when not successful, otherwise an optional note (e.g. TIA reported warnings).
+public sealed record PlcAlarmTextWriteResult(bool Success, IReadOnlyList<PlcAlarmTextListChange> Changes, string? Message);

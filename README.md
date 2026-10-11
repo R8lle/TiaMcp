@@ -22,6 +22,7 @@ Special features that make TiaMcp fast for LLM's and human-readable friendly:
 | STL (whole-block) | `.awl` | Yes | Yes |
 | STL (embedded in mixed FBD/LAD/SCL block) | `.stl-networks.awl` (or `.stl-networks.xml` fallback) + `.s7dcl`/`.s7res` | Yes | No |
 | UDT (PLC data type) | `.s7dcl` / `.s7res` | Yes | Yes |
+| Fail-safe block (F_FBD/F_LAD) | `.s7dcl` / `.s7res` (readable view) + `.xml` (SimaticML, written) | Yes | Yes (from `.xml`, safety login needed) |
 | PLC tag table | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI tag table (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
 | HMI alarms (WinCC Unified) | `.csv`, Excel-compatible (synthesized) | Yes | Yes |
@@ -152,6 +153,10 @@ END_GRAPH_BLOCK
 Only step/transition attributes, actions, and matched-by-number conditions are writable. Interface, `PREOPERATIONS`, `BRANCHES`, and `CONNECTIONS` (topology) are read-only in this version. GRAPH blocks must also be consistent (compiled) before they can be read or written at all — that's a Siemens API requirement, not a TiaMcp restriction.
 
 A new `.graph.il` file in the source tree is created by cloning an existing GRAPH block of the PLC and reshaping it — Openness has no from-scratch GRAPH creation API.
+
+## Fail-safe (F-) blocks
+
+TIA Portal V21 exports F-blocks as `.s7dcl`/`.s7res` but refuses to import them that way, even unchanged ("The resource file contains corrupted data or format might be invalid"). The SimaticML route works, as long as the user is logged on to the safety program in TIA Portal (Openness shares that login). So `read_source_tree` adds `<name>.xml` for every F-block, and `write_source_tree` writes an F-block from that file, then compiles the PLC software: an imported F-block stays inconsistent - and can't be exported - until the safety program is generated. A change made only in the `.s7dcl` of an F-block is refused instead of being silently dropped. New F-blocks can't be created this way.
 
 ## Source tree
 

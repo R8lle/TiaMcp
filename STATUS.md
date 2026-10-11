@@ -12,6 +12,7 @@ For object types TiaMcp doesn't support yet, the notes say what the Openness API
 |---|---|---|---|---|---|---|---|
 | Block: SCL / FBD / LAD / global DB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.s7dcl` / `.s7res` |
 | Block: GRAPH | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ✅ | `.graph.il`; create clones an existing GRAPH block as template; topology editing is limited |
+| Block: fail-safe (F_FBD/F_LAD) | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | written from `.xml` (SimaticML); needs the safety-program login in TIA Portal; compiles the PLC after the write |
 | Block: STL (whole block) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `.awl` |
 | Block: embedded STL networks | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | Read-only sidecar (`.stl-networks.awl`); rename/delete act on the whole block |
 | Instance-DB | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | Created from its `.s7dcl` or bound to an FB; read adds the resolved member list (`.interface.txt`) |

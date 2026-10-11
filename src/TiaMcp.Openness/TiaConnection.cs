@@ -471,6 +471,14 @@ public sealed partial class TiaConnection : IDisposable
                 docs.Add(new BlockDocument($"{block.Name}.interface.txt", FormatInstanceInterface(idb)));
             }
 
+            // F-blocks are written back from SimaticML (see TiaConnection.Failsafe.cs).
+            if (IsFailsafe(block))
+            {
+                var xml = ExportBlockXml(block, out var xmlError);
+                if (xml == null) return new ExportResult(false, docs, $"XML export of fail-safe block failed: {xmlError}");
+                docs.Add(new BlockDocument($"{block.Name}.xml", xml));
+            }
+
             return new ExportResult(true, docs, null);
         }
         finally
@@ -1270,6 +1278,11 @@ public sealed partial class TiaConnection : IDisposable
 
         var (block, owner) = found.Value;
 
+        if (IsFailsafe(block))
+        {
+            return WriteFailsafeBlock(software, block, owner, documents);
+        }
+
         if (block.ProgrammingLanguage == ProgrammingLanguage.GRAPH)
         {
             return WriteGraphBlock(software, block, owner, documents);
@@ -1298,7 +1311,7 @@ public sealed partial class TiaConnection : IDisposable
             });
         }
 
-        return ImportBlockDocuments(owner, blockName, documents, ImportDocumentOptions.Override);
+        return ImportBlockDocuments(owner, blockName, documents.Where(d => !IsBlockXml(d)).ToList(), ImportDocumentOptions.Override);
     }
 
     private static bool IsStlInvolved(PlcBlock block)

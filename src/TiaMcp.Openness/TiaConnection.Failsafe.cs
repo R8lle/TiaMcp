@@ -54,6 +54,13 @@ public sealed partial class TiaConnection
 
     private ImportResult WriteFailsafeBlock(PlcSoftware software, PlcBlock block, PlcBlockComposition owner, IReadOnlyList<BlockDocument> documents)
     {
+        // Checked first: an F-block import that TIA Portal refuses for a missing safety
+        // login still leaves orphaned cross-references in the project ('object not available',
+        // reproduced: 4 per refused attempt), which survive compiling and rebuilding the
+        // cross-reference data. So don't even try without the login.
+        var loginError = CheckSafetyLogin(software);
+        if (loginError != null) return new ImportResult(false, new[] { loginError });
+
         var xmlDoc = documents.FirstOrDefault(IsBlockXml);
         if (xmlDoc == null)
         {
@@ -88,8 +95,11 @@ public sealed partial class TiaConnection
         var dclDoc = documents.FirstOrDefault(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase));
         if (dclDoc != null)
         {
-            var currentXml = ExportBlockXml(block, out _);
-            var currentDcl = ExportDcl(block);
+            // Same pipeline as read_source_tree (network titles patched in), so an unchanged
+            // file compares equal.
+            var current = ReadBlock(software, block).Documents;
+            var currentXml = current.FirstOrDefault(IsBlockXml)?.Content;
+            var currentDcl = current.FirstOrDefault(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase))?.Content;
             if (currentXml != null && currentDcl != null
                 && Normalize(currentXml) == Normalize(xmlDoc.Content)
                 && Normalize(currentDcl) != Normalize(dclDoc.Content))
@@ -101,13 +111,6 @@ public sealed partial class TiaConnection
                 });
             }
         }
-
-        // Checked before Import: an F-block import that TIA Portal refuses for a missing safety
-        // login still leaves orphaned cross-references in the project ('object not available',
-        // reproduced: 4 per refused attempt), which survive compiling and rebuilding the
-        // cross-reference data. So don't even try without the login.
-        var loginError = CheckSafetyLogin(software);
-        if (loginError != null) return new ImportResult(false, new[] { loginError });
 
         var dir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "fxml", Guid.NewGuid().ToString("N")));
         dir.Create();
@@ -164,27 +167,6 @@ public sealed partial class TiaConnection
         catch
         {
             return null;
-        }
-    }
-
-    private static string? ExportDcl(PlcBlock block)
-    {
-        var dir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "fxml", Guid.NewGuid().ToString("N")));
-        dir.Create();
-        try
-        {
-            var result = block.ExportAsDocuments(dir, block.Name);
-            if (result.State == DocumentResultState.Failure) return null;
-            var dcl = result.ExportedDocuments.FirstOrDefault(f => f.Name.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase));
-            return dcl == null ? null : File.ReadAllText(dcl.FullName);
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            try { dir.Delete(true); } catch { /* best effort cleanup */ }
         }
     }
 

@@ -6,6 +6,9 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Siemens.Engineering;
 using Siemens.Engineering.Compiler;
+using Siemens.Engineering.HW;
+using Siemens.Engineering.HW.Features;
+using Siemens.Engineering.Safety;
 using Siemens.Engineering.SW;
 using Siemens.Engineering.SW.Blocks;
 
@@ -99,6 +102,13 @@ public sealed partial class TiaConnection
             }
         }
 
+        // Checked before Import: an F-block import that TIA Portal refuses for a missing safety
+        // login still leaves orphaned cross-references in the project ('object not available',
+        // reproduced: 4 per refused attempt), which survive compiling and rebuilding the
+        // cross-reference data. So don't even try without the login.
+        var loginError = CheckSafetyLogin(software);
+        if (loginError != null) return new ImportResult(false, new[] { loginError });
+
         var dir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "fxml", Guid.NewGuid().ToString("N")));
         dir.Create();
         try
@@ -138,6 +148,22 @@ public sealed partial class TiaConnection
         finally
         {
             try { dir.Delete(true); } catch { /* best effort cleanup */ }
+        }
+    }
+
+    private static string? CheckSafetyLogin(PlcSoftware software)
+    {
+        try
+        {
+            var admin = ((software.Parent as SoftwareContainer)?.Parent as DeviceItem)?.GetService<SafetyAdministration>();
+            if (admin == null) return null; // no safety administration reachable - let TIA Portal decide
+            if (!admin.IsSafetyOfflineProgramPasswordSet || admin.IsLoggedOnToSafetyOfflineProgram) return null;
+            return "Not logged on to the safety program. Log on in TIA Portal (safety administration) and write again - " +
+                   "an F-block import that TIA Portal refuses still leaves orphaned cross-references in the project.";
+        }
+        catch
+        {
+            return null;
         }
     }
 

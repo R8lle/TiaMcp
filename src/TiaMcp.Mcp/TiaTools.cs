@@ -1051,7 +1051,10 @@ Writes '<sourceDirectory>/_import_report.txt' with one CREATED/UPDATED/SKIPPED/F
             foreach (var write in layers[i])
             {
                 var result = await write.Write();
-                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label); written.Add(write.Item); }
+                // An F-block write reports its compile and cross-reference check - keep those visible.
+                var notes = result.Success && result.Messages.Any(m => m.StartsWith("Cross-reference check", StringComparison.Ordinal))
+                    ? $"  [{string.Join(" ", result.Messages)}]" : "";
+                if (result.Success) { (write.IsCreate ? created : updated).Add(write.Label + notes); written.Add(write.Item); }
                 else if (write.IsCreate) { retry.Add(write); lastError[write] = string.Join(" | ", result.Messages); }
                 else failed.Add($"{write.Label}: {string.Join(" | ", result.Messages)}");
             }

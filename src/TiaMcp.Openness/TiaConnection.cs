@@ -173,6 +173,7 @@ public sealed partial class TiaConnection : IDisposable
     {
         _tiaPortal = portal;
         _project = project;
+        _failsafeImportFailed = null;
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
         _hmiTargetByName.Clear();
@@ -1277,6 +1278,11 @@ public sealed partial class TiaConnection : IDisposable
         }
 
         var (block, owner) = found.Value;
+
+        if (_failsafeImportFailed != null)
+        {
+            return new ImportResult(false, new[] { $"REFUSED - nothing written: the F-block import of '{_failsafeImportFailed}' failed earlier in this project state. Close the project WITHOUT saving, open it again and call tia_connect first." });
+        }
 
         if (IsFailsafe(block))
         {

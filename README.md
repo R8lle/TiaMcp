@@ -158,6 +158,8 @@ A new `.graph.il` file in the source tree is created by cloning an existing GRAP
 
 TIA Portal V21 exports F-blocks as `.s7dcl`/`.s7res` but refuses to import them that way, even unchanged ("The resource file contains corrupted data or format might be invalid"). The SimaticML route works, as long as the user is logged on to the safety program in TIA Portal (Openness shares that login). So `read_source_tree` adds `<name>.xml` for every F-block, and `write_source_tree` writes an F-block from that file, then compiles the PLC software: an imported F-block stays inconsistent - and can't be exported - until the safety program is generated. A change made only in the `.s7dcl` of an F-block is refused instead of being silently dropped. New F-blocks can't be created this way.
 
+A failed or refused F-block import leaves orphaned cross-references in the project ("Object not available"); compiling or rebuilding the cross-reference data doesn't remove them, only closing the project without saving does. So the write checks the safety login first, and counts these entries in the cross references of the objects the block uses before and after each import. If the count grows, or the import fails, it stops: that and every further block write in the same project state is refused until the project was closed without saving and reconnected. The report line of a successful F-block write shows the compile result and the count.
+
 ## Source tree
 
 `read_source_tree` exports PLC blocks, tag tables, UDTs and alarm text lists, WinCC Unified HMI tag tables and alarms, and classic WinCC screens, screen templates, pop-up screens, tag tables and text lists to disk, in folders mirroring the TIA Portal project tree — the whole project, or only the items or groups you name:

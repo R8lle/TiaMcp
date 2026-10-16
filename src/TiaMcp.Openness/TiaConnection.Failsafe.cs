@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Siemens.Engineering;
 using Siemens.Engineering.Compiler;
+using Siemens.Engineering.CrossReference;
 using Siemens.Engineering.HW;
 using Siemens.Engineering.HW.Features;
 using Siemens.Engineering.Safety;
@@ -61,6 +62,17 @@ public sealed partial class TiaConnection
         var loginError = CheckSafetyLogin(software);
         if (loginError != null) return new ImportResult(false, new[] { loginError });
 
+        // A failed F import is never retried in the same project state: its orphaned
+        // cross-references only go away by closing the project without saving.
+        if (_failsafeImportFailed != null)
+        {
+            return new ImportResult(false, new[]
+            {
+                $"REFUSED - nothing written: the F-block import of '{_failsafeImportFailed}' failed earlier in this project state. " +
+                "Close the project in TIA Portal WITHOUT saving, open it again, call tia_connect, and only then write F-blocks again.",
+            });
+        }
+
         var xmlDoc = documents.FirstOrDefault(IsBlockXml);
         if (xmlDoc == null)
         {
@@ -112,13 +124,34 @@ public sealed partial class TiaConnection
             }
         }
 
+        // Orphaned cross-references ('object not available') from a failed import show up in the
+        // cross references of the objects the block uses - counted before and after the import.
+        var blockName = block.Name;
+        var watched = GlobalNamesIn(xmlDoc.Content).Prepend(blockName).Distinct(StringComparer.OrdinalIgnoreCase).Take(40).ToList();
+        var orphansBefore = CountOrphanReferences(software, watched);
+
         var dir = new DirectoryInfo(Path.Combine(Path.GetTempPath(), "TiaMcp", "fxml", Guid.NewGuid().ToString("N")));
         dir.Create();
         try
         {
             var file = new FileInfo(Path.Combine(dir.FullName, block.Name + ".xml"));
             File.WriteAllText(file.FullName, xmlDoc.Content);
-            owner.Import(file, ImportOptions.Override);
+            try
+            {
+                owner.Import(file, ImportOptions.Override);
+            }
+            catch (Exception importEx)
+            {
+                _failsafeImportFailed = blockName;
+                var added = CountOrphanReferences(software, watched) - orphansBefore;
+                return new ImportResult(false, new[]
+                {
+                    $"Import of fail-safe block '{blockName}' from XML failed: {importEx.Message}",
+                    added > 0
+                        ? $"STOP: the failed import left {added} orphaned cross-reference(s) ('object not available') in the project. Close the project WITHOUT saving and open it again - that is the only way to remove them. Nothing further is written until then."
+                        : "No orphaned cross-references were found after the failed import. F-block writes stay blocked in this project state anyway - reconnect (tia_connect) after checking the project.",
+                });
+            }
 
             // An imported F-block stays inconsistent - and can't even be exported again - until
             // the safety program is compiled, so compile right away and report the outcome.
@@ -139,6 +172,14 @@ public sealed partial class TiaConnection
             {
                 messages.Add($"(Written, but the compile failed to run: {ex.Message} - compile_plc it.)");
             }
+            var orphansAfter = CountOrphanReferences(software, watched);
+            if (orphansAfter > orphansBefore)
+            {
+                _failsafeImportFailed = blockName;
+                messages.Add($"STOP: the import added {orphansAfter - orphansBefore} orphaned cross-reference(s) ('object not available'). Close the project WITHOUT saving and open it again. Nothing further is written until then.");
+                return new ImportResult(false, messages);
+            }
+            messages.Add($"Cross-reference check: no new orphaned references ({orphansAfter} before and after, over {watched.Count} object(s)).");
             return new ImportResult(true, messages);
         }
         catch (Exception ex)
@@ -152,6 +193,61 @@ public sealed partial class TiaConnection
         {
             try { dir.Delete(true); } catch { /* best effort cleanup */ }
         }
+    }
+
+    // Name of the F-block whose import failed in this connection; blocks further F imports.
+    private string? _failsafeImportFailed;
+
+    // First symbol component of every global access in a SimaticML block (DBs and PLC tags).
+    private static IEnumerable<string> GlobalNamesIn(string xml)
+    {
+        try
+        {
+            return XDocument.Parse(xml).Descendants()
+                .Where(e => e.Name.LocalName == "Access" && (string?)e.Attribute("Scope") == "GlobalVariable")
+                .Select(e => e.Descendants().FirstOrDefault(c => c.Name.LocalName == "Component")?.Attribute("Name")?.Value)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Select(n => n!)
+                .ToList();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    private static int CountOrphanReferences(PlcSoftware software, IEnumerable<string> names)
+    {
+        var count = 0;
+        foreach (var name in names)
+        {
+            try
+            {
+                IEngineeringServiceProvider? provider =
+                    (IEngineeringServiceProvider?)FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, name)?.block
+                    ?? FindTagByName(software.TagTableGroup.TagTables, software.TagTableGroup.Groups, name);
+                var service = provider?.GetService<CrossReferenceService>();
+                if (service == null) continue;
+                foreach (SourceObject source in service.GetCrossReferences(CrossReferenceFilter.AllObjects).Sources)
+                    count += CountOrphans(source);
+            }
+            catch
+            {
+                // object not resolvable right now - not counted
+            }
+        }
+        return count;
+    }
+
+    private static int CountOrphans(SourceObject source)
+    {
+        static bool Placeholder(string? s) => s != null && s.StartsWith("[", StringComparison.Ordinal) && s.EndsWith("]", StringComparison.Ordinal);
+        var count = 0;
+        foreach (ReferenceObject reference in source.References)
+            foreach (Location location in reference.Locations)
+                if (Placeholder(reference.Name) || Placeholder(location.ReferenceLocation)) count++;
+        foreach (SourceObject child in source.Children) count += CountOrphans(child);
+        return count;
     }
 
     private static string? CheckSafetyLogin(PlcSoftware software)

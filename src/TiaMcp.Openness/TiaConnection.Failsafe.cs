@@ -135,14 +135,17 @@ public sealed partial class TiaConnection
         try
         {
             var file = new FileInfo(Path.Combine(dir.FullName, block.Name + ".xml"));
-            File.WriteAllText(file.FullName, xmlDoc.Content);
+            // TIA Portal refuses a network whose parts are not in power-flow order ("Die Elemente
+            // müssen nach dem Stromfluss sortiert werden") - and a refused F import leaves orphans.
+            var content = OrderPartsByPowerFlow(xmlDoc.Content, out var reordered);
+            File.WriteAllText(file.FullName, content);
             try
             {
                 owner.Import(file, ImportOptions.Override);
             }
             catch (Exception importEx)
             {
-                _failsafeImportFailed = blockName;
+                MarkFailsafeImportFailed(blockName, software.Name, watched, orphansBefore);
                 var added = CountOrphanReferences(software, watched) - orphansBefore;
                 return new ImportResult(false, new[]
                 {
@@ -156,6 +159,7 @@ public sealed partial class TiaConnection
             // An imported F-block stays inconsistent - and can't even be exported again - until
             // the safety program is compiled, so compile right away and report the outcome.
             var messages = new List<string> { "Fail-safe block written from SimaticML XML." };
+            if (reordered > 0) messages.Add($"Parts put into power-flow order in {reordered} network(s).");
             try
             {
                 // Compiling just the block leaves it inconsistent; the safety program is generated
@@ -175,7 +179,7 @@ public sealed partial class TiaConnection
             var orphansAfter = CountOrphanReferences(software, watched);
             if (orphansAfter > orphansBefore)
             {
-                _failsafeImportFailed = blockName;
+                MarkFailsafeImportFailed(blockName, software.Name, watched, orphansBefore);
                 messages.Add($"STOP: the import added {orphansAfter - orphansBefore} orphaned cross-reference(s) ('object not available'). Close the project WITHOUT saving and open it again. Nothing further is written until then.");
                 return new ImportResult(false, messages);
             }
@@ -195,8 +199,140 @@ public sealed partial class TiaConnection
         }
     }
 
-    // Name of the F-block whose import failed in this connection; blocks further F imports.
+    // Name of the F-block whose import failed in this project state; blocks further writes. Kept in
+    // a file per project, so a restarted server doesn't write into the same polluted project again.
     private string? _failsafeImportFailed;
+
+    private static string FailsafeFlagFile =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TiaMcp", "failed_f_imports.txt");
+
+    private string? ProjectKey() => _project?.Path?.FullName?.ToLowerInvariant();
+
+    // Entry: project|block|plc|orphans before the import|watched names (;-separated).
+    private void MarkFailsafeImportFailed(string blockName, string plcName, IReadOnlyList<string> watched, int orphansBefore)
+    {
+        _failsafeImportFailed = blockName;
+        try
+        {
+            var key = ProjectKey();
+            if (key == null) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(FailsafeFlagFile)!);
+            var lines = File.Exists(FailsafeFlagFile) ? File.ReadAllLines(FailsafeFlagFile).Where(l => !l.StartsWith(key + "|", StringComparison.Ordinal)).ToList() : new List<string>();
+            lines.Add($"{key}|{blockName}|{plcName}|{orphansBefore}|{string.Join(";", watched)}");
+            File.WriteAllLines(FailsafeFlagFile, lines);
+        }
+        catch
+        {
+            // the in-memory flag still holds for this server process
+        }
+    }
+
+    // At connect: if a failed F import was recorded for this project, count the orphaned
+    // references again. More than before the import -> still the polluted state, stay blocked.
+    // Back at the old count -> the project was reopened without saving: clear the record.
+    // (IsModified can't tell - TIA Portal marks some projects modified right after opening.)
+    private void LoadFailsafeImportFlag()
+    {
+        _failsafeImportFailed = null;
+        try
+        {
+            var key = ProjectKey();
+            if (key == null || !File.Exists(FailsafeFlagFile)) return;
+            var lines = File.ReadAllLines(FailsafeFlagFile).ToList();
+            var entry = lines.FirstOrDefault(l => l.StartsWith(key + "|", StringComparison.Ordinal));
+            if (entry == null) return;
+            var f = entry.Split('|');
+            var polluted = true;
+            if (f.Length >= 5 && _softwareByName.TryGetValue(f[2], out var software) && int.TryParse(f[3], out var before))
+                polluted = CountOrphanReferences(software, f[4].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) > before;
+            if (polluted) _failsafeImportFailed = f[1];
+            else File.WriteAllLines(FailsafeFlagFile, lines.Where(l => l != entry));
+        }
+        catch
+        {
+            // unreadable flag file - not blocking
+        }
+    }
+
+    // Puts the parts of every FBD/LAD network in power-flow order: all accesses first (as TIA
+    // Portal exports them), then each rung - a connected group of parts/calls - as one run, in
+    // the order its parts feed each other; rungs and ties keep their order of first appearance.
+    // Wires list their source connection first. Returns the input unchanged when nothing moves.
+    private static string OrderPartsByPowerFlow(string xml, out int reordered)
+    {
+        reordered = 0;
+        XDocument doc;
+        try { doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace); }
+        catch { return xml; }
+
+        foreach (var parts in doc.Descendants().Where(e => e.Name.LocalName == "Parts" && e.Parent?.Name.LocalName == "FlgNet").ToList())
+        {
+            var wires = parts.Parent!.Elements().FirstOrDefault(e => e.Name.LocalName == "Wires");
+            var elements = parts.Elements().ToList();
+            var nodes = elements.Where(e => e.Name.LocalName != "Access").ToList();
+            if (nodes.Count < 2 || wires == null) continue;
+            var uidOf = nodes.ToDictionary(e => e, e => (string?)e.Attribute("UId") ?? "");
+            var byUid = nodes.Where(e => uidOf[e] != "").GroupBy(e => uidOf[e]).ToDictionary(g => g.Key, g => g.First());
+
+            var next = nodes.ToDictionary(n => n, n => new List<XElement>());
+            var indegree = nodes.ToDictionary(n => n, n => 0);
+            var neighbours = nodes.ToDictionary(n => n, n => new HashSet<XElement>());
+            foreach (var wire in wires.Elements().Where(w => w.Name.LocalName == "Wire"))
+            {
+                var cons = wire.Elements().ToList();
+                if (cons.Count < 2) continue;
+                var srcUid = (string?)cons[0].Attribute("UId");
+                if (srcUid == null || !byUid.TryGetValue(srcUid, out var src)) continue;
+                foreach (var c in cons.Skip(1))
+                {
+                    var uid = (string?)c.Attribute("UId");
+                    if (uid == null || !byUid.TryGetValue(uid, out var dst) || dst == src) continue;
+                    if (!next[src].Contains(dst)) { next[src].Add(dst); indegree[dst]++; }
+                    neighbours[src].Add(dst); neighbours[dst].Add(src);
+                }
+            }
+
+            // Rungs = connected groups, in order of first appearance.
+            var rungOf = new Dictionary<XElement, int>();
+            var rungCount = 0;
+            foreach (var n in nodes)
+            {
+                if (rungOf.ContainsKey(n)) continue;
+                var stack = new Stack<XElement>(); stack.Push(n); rungOf[n] = rungCount;
+                while (stack.Count > 0)
+                    foreach (var m in neighbours[stack.Pop()])
+                        if (!rungOf.ContainsKey(m)) { rungOf[m] = rungCount; stack.Push(m); }
+                rungCount++;
+            }
+
+            var ordered = new List<XElement>();
+            for (var r = 0; r < rungCount; r++)
+            {
+                var pending = nodes.Where(n => rungOf[n] == r).ToList();
+                var deg = pending.ToDictionary(n => n, n => indegree[n]);
+                while (pending.Count > 0)
+                {
+                    var ready = pending.FirstOrDefault(n => deg[n] == 0) ?? pending[0]; // a loop: keep original order
+                    pending.Remove(ready); ordered.Add(ready);
+                    foreach (var m in next[ready]) if (deg.ContainsKey(m)) deg[m]--;
+                }
+            }
+
+            var newOrder = elements.Where(e => e.Name.LocalName == "Access").Concat(ordered).ToList();
+            if (newOrder.SequenceEqual(elements)) continue;
+
+            // Re-insert with the element indentation the file already uses.
+            var indent = parts.Nodes().OfType<XText>().FirstOrDefault()?.Value ?? "\n";
+            var closing = parts.Nodes().OfType<XText>().LastOrDefault()?.Value ?? "\n";
+            parts.RemoveNodes();
+            foreach (var e in newOrder) { parts.Add(new XText(indent)); parts.Add(e); }
+            parts.Add(new XText(closing));
+            reordered++;
+        }
+        if (reordered == 0) return xml;
+        var declaration = doc.Declaration != null ? doc.Declaration + (xml.Contains("\r\n") ? "\r\n" : "\n") : "";
+        return declaration + doc.Root!.ToString(SaveOptions.DisableFormatting);
+    }
 
     // First symbol component of every global access in a SimaticML block (DBs and PLC tags).
     private static IEnumerable<string> GlobalNamesIn(string xml)

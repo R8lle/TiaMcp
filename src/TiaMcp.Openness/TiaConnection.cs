@@ -173,7 +173,6 @@ public sealed partial class TiaConnection : IDisposable
     {
         _tiaPortal = portal;
         _project = project;
-        _failsafeImportFailed = null;
         _softwareByName.Clear();
         _hmiSoftwareByName.Clear();
         _hmiTargetByName.Clear();
@@ -182,6 +181,7 @@ public sealed partial class TiaConnection : IDisposable
             CollectSoftware(device.DeviceItems);
         }
 
+        LoadFailsafeImportFlag();
         return new ConnectResult(true, project.Name, project.Path?.FullName, null);
     }
 

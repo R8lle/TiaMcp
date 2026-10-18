@@ -1279,10 +1279,7 @@ public sealed partial class TiaConnection : IDisposable
 
         var (block, owner) = found.Value;
 
-        if (_failsafeImportFailed != null)
-        {
-            return new ImportResult(false, new[] { $"REFUSED - nothing written: the F-block import of '{_failsafeImportFailed}' failed earlier in this project state. Close the project WITHOUT saving, open it again and call tia_connect first." });
-        }
+        if (RefusedAfterFailedImport() is { } refused) return refused;
 
         if (IsFailsafe(block))
         {
@@ -1510,6 +1507,8 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"A block named '{blockName}' already exists in PLC '{plcName}' (block names are unique per-PLC, not per-group). Pick a different name." });
         }
 
+        if (RefusedAfterFailedImport() is { } refused) return refused;
+
         PlcBlockUserGroup? targetGroup = null;
         if (!string.IsNullOrEmpty(groupPath))
         {
@@ -1541,6 +1540,8 @@ public sealed partial class TiaConnection : IDisposable
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_group first, or pass an empty groupPath for the root." });
         }
 
+        if (IsFailsafeSource(documents)) return CreateFailsafeBlock(software, resolved.Value.Blocks, blockName, documents);
+        if (RefusedAfterFailedImport() is { } refused) return refused;
         return ImportBlockDocuments(resolved.Value.Blocks, blockName, documents, ImportDocumentOptions.None);
     }
 
@@ -1574,6 +1575,8 @@ public sealed partial class TiaConnection : IDisposable
         {
             return new ImportResult(false, new[] { $"Group '{groupPath}' not found in PLC '{plcName}'. Use create_plc_group first, or pass an empty groupPath for the root." });
         }
+
+        if (RefusedAfterFailedImport() is { } refused) return refused;
 
         var templateFound = FindBlockByName(software.BlockGroup.Blocks, software.BlockGroup.Groups, templateBlockName);
         if (templateFound == null)

@@ -35,7 +35,7 @@ public sealed partial class TiaConnection
         dir.Create();
         try
         {
-            var file = new FileInfo(Path.Combine(dir.FullName, block.Name + ".xml"));
+            var file = new FileInfo(Path.Combine(dir.FullName, "block.xml"));
             block.Export(file, ExportOptions.WithDefaults);
             error = null;
             // DocumentInfo/Created is the export time - drop it, or every re-export would look like
@@ -59,19 +59,7 @@ public sealed partial class TiaConnection
         // login still leaves orphaned cross-references in the project ('object not available',
         // reproduced: 4 per refused attempt), which survive compiling and rebuilding the
         // cross-reference data. So don't even try without the login.
-        var loginError = CheckSafetyLogin(software);
-        if (loginError != null) return new ImportResult(false, new[] { loginError });
-
-        // A failed F import is never retried in the same project state: its orphaned
-        // cross-references only go away by closing the project without saving.
-        if (_failsafeImportFailed != null)
-        {
-            return new ImportResult(false, new[]
-            {
-                $"REFUSED - nothing written: the F-block import of '{_failsafeImportFailed}' failed earlier in this project state. " +
-                "Close the project in TIA Portal WITHOUT saving, open it again, call tia_connect, and only then write F-blocks again.",
-            });
-        }
+        if (FailsafePrecheck(software) is { } refused) return refused;
 
         var xmlDoc = documents.FirstOrDefault(IsBlockXml);
         if (xmlDoc == null)
@@ -134,7 +122,7 @@ public sealed partial class TiaConnection
         dir.Create();
         try
         {
-            var file = new FileInfo(Path.Combine(dir.FullName, block.Name + ".xml"));
+            var file = new FileInfo(Path.Combine(dir.FullName, "block.xml"));
             // TIA Portal refuses a network whose parts are not in power-flow order ("Die Elemente
             // müssen nach dem Stromfluss sortiert werden") - and a refused F import leaves orphans.
             var content = OrderPartsByPowerFlow(xmlDoc.Content, out var reordered);
@@ -156,35 +144,9 @@ public sealed partial class TiaConnection
                 });
             }
 
-            // An imported F-block stays inconsistent - and can't even be exported again - until
-            // the safety program is compiled, so compile right away and report the outcome.
             var messages = new List<string> { "Fail-safe block written from SimaticML XML." };
             if (reordered > 0) messages.Add($"Parts put into power-flow order in {reordered} network(s).");
-            try
-            {
-                // Compiling just the block leaves it inconsistent; the safety program is generated
-                // as a whole by the PLC software compile.
-                var result = software.GetService<ICompilable>()?.Compile();
-                if (result != null)
-                {
-                    messages.Add($"Compiled: {result.State}, {result.ErrorCount} error(s), {result.WarningCount} warning(s).");
-                    foreach (var m in Flatten(result.Messages).Where(m => m.State == CompilerResultState.Error).Take(20))
-                        messages.Add($"[Error] {m.Path}: {m.Description}");
-                }
-            }
-            catch (Exception ex)
-            {
-                messages.Add($"(Written, but the compile failed to run: {ex.Message} - compile_plc it.)");
-            }
-            var orphansAfter = CountOrphanReferences(software, watched);
-            if (orphansAfter > orphansBefore)
-            {
-                MarkFailsafeImportFailed(blockName, software.Name, watched, orphansBefore);
-                messages.Add($"STOP: the import added {orphansAfter - orphansBefore} orphaned cross-reference(s) ('object not available'). Close the project WITHOUT saving and open it again. Nothing further is written until then.");
-                return new ImportResult(false, messages);
-            }
-            messages.Add($"Cross-reference check: no new orphaned references ({orphansAfter} before and after, over {watched.Count} object(s)).");
-            return new ImportResult(true, messages);
+            return CompileAndCheckFailsafe(software, blockName, watched, orphansBefore, messages);
         }
         catch (Exception ex)
         {
@@ -385,6 +347,116 @@ public sealed partial class TiaConnection
         foreach (SourceObject child in source.Children) count += CountOrphans(child);
         return count;
     }
+
+    // Checked before every F-block write or create. The login first: an F import that TIA Portal
+    // refuses for a missing safety login still leaves orphaned cross-references. Then the block
+    // after a failed import: it is never retried in the same project state.
+    private ImportResult? FailsafePrecheck(PlcSoftware software)
+    {
+        var loginError = CheckSafetyLogin(software);
+        if (loginError != null) return new ImportResult(false, new[] { loginError });
+        return RefusedAfterFailedImport();
+    }
+
+    private ImportResult? RefusedAfterFailedImport() => _failsafeImportFailed == null ? null : new ImportResult(false, new[]
+    {
+        $"REFUSED - nothing written: the F-block import of '{_failsafeImportFailed}' failed earlier in this project state. " +
+        "Close the project in TIA Portal WITHOUT saving, open it again and call tia_connect. " +
+        "If the project was saved since (the orphaned cross-references are then part of it), tia_connect with releaseFailedImportBlock=true lifts this block.",
+    });
+
+    // After an F-block was imported or created: an F-block stays inconsistent - and can't even be
+    // exported again - until the safety program is compiled, so compile the PLC (compiling just
+    // the block isn't enough), then count the orphaned references again.
+    private ImportResult CompileAndCheckFailsafe(PlcSoftware software, string blockName, IReadOnlyList<string> watched, int orphansBefore, List<string> messages)
+    {
+        var compileErrors = 0;
+        try
+        {
+            var result = software.GetService<ICompilable>()?.Compile();
+            if (result != null)
+            {
+                compileErrors = result.ErrorCount;
+                messages.Add($"Compiled: {result.State}, {result.ErrorCount} error(s), {result.WarningCount} warning(s).");
+                foreach (var m in Flatten(result.Messages).Where(m => m.State == CompilerResultState.Error && !string.IsNullOrWhiteSpace(m.Description) && !m.Description.StartsWith("Compiling finished", StringComparison.Ordinal)).Take(20))
+                    messages.Add($"[Error] {m.Path}: {m.Description}");
+            }
+        }
+        catch (Exception ex)
+        {
+            compileErrors = -1;
+            messages.Add($"(The compile failed to run: {ex.Message})");
+        }
+
+        var orphansAfter = CountOrphanReferences(software, watched);
+        if (orphansAfter > orphansBefore)
+        {
+            MarkFailsafeImportFailed(blockName, software.Name, watched, orphansBefore);
+            messages.Add($"STOP: the write added {orphansAfter - orphansBefore} orphaned cross-reference(s) ('object not available'). Close the project WITHOUT saving and open it again. Nothing further is written until then.");
+            return new ImportResult(false, messages, true);
+        }
+        messages.Add($"Cross-reference check: no new orphaned references ({orphansAfter} before and after, over {watched.Count} object(s)).");
+
+        // Written, but not compiled cleanly: the block stays inconsistent and can't be read back,
+        // so report it as not done - the tree keeps the edited files instead of marking them stale.
+        if (compileErrors != 0)
+        {
+            messages.Add($"'{blockName}' was written, but the PLC doesn't compile cleanly, so it can't be read back yet. Fix the errors, run compile_plc, then read_source_tree with items to refresh the tree.");
+            return new ImportResult(false, messages, true);
+        }
+        return new ImportResult(true, messages, true);
+    }
+
+    // A new F-block from .s7dcl: same checks and the compile a write gets (CreateBlock).
+    private static bool IsFailsafeSource(IReadOnlyList<BlockDocument> documents) =>
+        documents.Any(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)
+                           && Regex.IsMatch(d.Content, @"S7_Safety\s*:=\s*""TRUE""", RegexOptions.IgnoreCase));
+
+    // Quoted global names in a .s7dcl ("DB".member, "Tag") - for the orphan count of a create.
+    private static IEnumerable<string> GlobalNamesInDcl(string dcl) =>
+        Regex.Matches(dcl, "\"([^\"]+)\"").Cast<Match>().Select(m => m.Groups[1].Value).Distinct(StringComparer.OrdinalIgnoreCase);
+
+    private ImportResult CreateFailsafeBlock(PlcSoftware software, PlcBlockComposition target, string blockName, IReadOnlyList<BlockDocument> documents)
+    {
+        if (FailsafePrecheck(software) is { } refused) return refused;
+        var dcl = documents.First(d => d.FileName.EndsWith(".s7dcl", StringComparison.OrdinalIgnoreCase)).Content;
+        var watched = GlobalNamesInDcl(dcl).Prepend(blockName).Distinct(StringComparer.OrdinalIgnoreCase).Take(40).ToList();
+        var orphansBefore = CountOrphanReferences(software, watched);
+        var created = ImportBlockDocuments(target, blockName, documents.Where(d => !IsBlockXml(d)).ToList(), ImportDocumentOptions.None);
+        if (!created.Success)
+        {
+            var added = CountOrphanReferences(software, watched) - orphansBefore;
+            if (added > 0)
+            {
+                MarkFailsafeImportFailed(blockName, software.Name, watched, orphansBefore);
+                return new ImportResult(false, created.Messages.Concat(new[] { $"STOP: the failed create left {added} orphaned cross-reference(s). Close the project WITHOUT saving and open it again. Nothing further is written until then." }).ToList());
+            }
+            return created;
+        }
+        return CompileAndCheckFailsafe(software, blockName, watched, orphansBefore, new List<string> { "Fail-safe block created from .s7dcl." });
+    }
+
+    /// <summary>Lifts the failed-import block for the connected project (after it was saved with the orphans in it).</summary>
+    public string? ReleaseFailedImportBlock()
+    {
+        EnsureConnected();
+        var released = _failsafeImportFailed;
+        _failsafeImportFailed = null;
+        try
+        {
+            var key = ProjectKey();
+            if (key != null && File.Exists(FailsafeFlagFile))
+                File.WriteAllLines(FailsafeFlagFile, File.ReadAllLines(FailsafeFlagFile).Where(l => !l.StartsWith(key + "|", StringComparison.Ordinal)));
+        }
+        catch
+        {
+            // nothing recorded
+        }
+        return released;
+    }
+
+    /// <summary>Name of the F-block whose failed import currently blocks writes (null when none).</summary>
+    public string? FailedImportBlock => _failsafeImportFailed;
 
     private static string? CheckSafetyLogin(PlcSoftware software)
     {

@@ -181,7 +181,7 @@ public sealed partial class TiaTools
     public Task<string> SetIoAddress(
         [Description("PLC software name, from list_project")] string plcName,
         [Description("Device name, as list_hardware / read_io_map show it")] string deviceName,
-        [Description("Module path inside the device, as read_io_map shows it after 'device / ' (e.g. 'KF302/KF302')")] string modulePath,
+        [Description("Module path inside the device, as read_io_map shows it after 'device / ' (e.g. 'DI_1/DI_1')")] string modulePath,
         [Description("I (or E) for the input range, Q (or A) for the output range")] string area,
         [Description("New start byte of the range")] int newStart,
         [Description("true (default) = preview only")] bool dryRun = true) => Safe(async () =>
